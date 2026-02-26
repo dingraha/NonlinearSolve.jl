@@ -17,8 +17,15 @@ and static array problems.
     automatic backend selection). Valid choices include jacobian backends from
     `DifferentiationInterface.jl`.
 """
-@kwdef @concrete struct SimpleNewtonRaphson <: AbstractSimpleNonlinearSolveAlgorithm
-    autodiff = nothing
+@concrete struct SimpleNewtonRaphson <: AbstractSimpleNonlinearSolveAlgorithm
+    autodiff
+    linesearch <: Union{Val{false}, Val{true}}
+end
+
+function SimpleNewtonRaphson(; autodiff = nothing, linesearch::Union{Bool, Val{true}, Val{false}} = Val(false),
+    )
+    linesearch = linesearch isa Bool ? Val(linesearch) : linesearch
+    return SimpleNewtonRaphson(autodiff, linesearch)
 end
 
 const SimpleGaussNewton = SimpleNewtonRaphson
@@ -53,6 +60,13 @@ function SciMLBase.__solve(
         prob, abstol, reltol, fx, x, termination_condition, Val(:simple)
     )
 
+    if alg.linesearch isa Val{true}
+        ls_alg = LiFukushimaLineSearch(; nan_maxiters = nothing)
+        ls_cache = init(prob, ls_alg, fx, x)
+    else
+        ls_cache = nothing
+    end
+
     @bb xo = similar(x)
     fx_cache = (SciMLBase.isinplace(prob) && !SciMLBase.has_jac(prob.f)) ?
         NLBUtils.safe_similar(fx) : fx
@@ -62,7 +76,15 @@ function SciMLBase.__solve(
     for _ in 1:maxiters
         @bb copyto!(xo, x)
         δx = NLBUtils.restructure(x, J \ NLBUtils.safe_vec(fx))
-        @bb x .-= δx
+
+        if ls_cache === nothing
+            α = true
+        else
+            ls_sol = solve!(ls_cache, xo, δx)
+            α = ls_sol.step_size # Ignores the return code for now
+        end
+
+        @bb x .-= α * δx
 
         solved, retcode, fx_sol, x_sol = Utils.check_termination(tc_cache, fx, x, xo, prob)
         solved && return SciMLBase.build_solution(prob, alg, x_sol, fx_sol; retcode)
