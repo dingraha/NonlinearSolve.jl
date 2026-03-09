@@ -28,6 +28,11 @@ function SimpleNewtonRaphson(; autodiff = nothing, linesearch::Union{Bool, Val{t
     return SimpleNewtonRaphson(autodiff, linesearch)
 end
 
+function SimpleNewtonRaphson(autodiff)
+    linesearch = Val{false}()
+    return SimpleNewtonRaphson(autodiff, linesearch)
+end
+
 const SimpleGaussNewton = SimpleNewtonRaphson
 
 function configure_autodiff(prob, alg::SimpleNewtonRaphson)
