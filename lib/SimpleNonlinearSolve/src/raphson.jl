@@ -61,7 +61,7 @@ function SciMLBase.__solve(
     )
 
     if alg.linesearch isa Val{true}
-        ls_alg = LiFukushimaLineSearch(; nan_maxiters = nothing)
+        ls_alg = BackTracking(; autodiff=autodiff)
         ls_cache = init(prob, ls_alg, fx, x)
     else
         ls_cache = nothing
@@ -76,6 +76,7 @@ function SciMLBase.__solve(
     for _ in 1:maxiters
         @bb copyto!(xo, x)
         δx = NLBUtils.restructure(x, J \ NLBUtils.safe_vec(fx))
+        @bb δx .*= -1
 
         if ls_cache === nothing
             α = true
@@ -84,7 +85,7 @@ function SciMLBase.__solve(
             α = ls_sol.step_size # Ignores the return code for now
         end
 
-        @bb x .-= α * δx
+        @bb x .+= α * δx
 
         solved, retcode, fx_sol, x_sol = Utils.check_termination(tc_cache, fx, x, xo, prob)
         solved && return SciMLBase.build_solution(prob, alg, x_sol, fx_sol; retcode)
