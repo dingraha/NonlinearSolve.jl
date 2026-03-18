@@ -9,7 +9,7 @@ using SciMLBase: SciMLBase, NonlinearProblem, ReturnCode
 
 function SciMLBase.__solve(
         prob::NonlinearProblem, alg::NLsolveJL, args...;
-        abstol = nothing, maxiters = 1000, alias = SciMLBase.NonlinearAliasSpecifier(alias_u0 = false),
+        abstol = nothing, reltol = nothing, maxiters = 1000, alias = SciMLBase.NonlinearAliasSpecifier(alias_u0 = false),
         termination_condition = nothing, trace_level = TraceMinimal(),
         store_trace::Val = Val(false), show_trace::Val = Val(false), kwargs...
     )
@@ -39,6 +39,7 @@ function SciMLBase.__solve(
     end
 
     abstol = NonlinearSolveBase.get_tolerance(abstol, eltype(u0))
+    reltol = NonlinearSolveBase.get_tolerance(reltol, eltype(u0))
     show_trace = show_trace isa Val{true}
     store_trace = store_trace isa Val{true}
     extended_trace = !(trace_level.trace_mode isa Val{:minimal})
@@ -47,7 +48,7 @@ function SciMLBase.__solve(
 
     original = nlsolve(
         df, vec(u0);
-        ftol = abstol, iterations = maxiters, alg.method, store_trace, extended_trace,
+        ftol = abstol, xtol = reltol, iterations = maxiters, alg.method, store_trace, extended_trace,
         linesearch, alg.linsolve, alg.factor, alg.autoscale, alg.m, alg.beta, show_trace
     )
 
