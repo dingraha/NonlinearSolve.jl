@@ -134,7 +134,7 @@ function JacobianOperator(
         input_cache = u isa Number ? T(u) : similar(u, T)
     else
         output_cache = nothing
-        input_cache = copy(u)
+        input_cache = u isa Number ? T(u) : T.(u)
     end
 
     return JacobianOperator{iip, T}(
