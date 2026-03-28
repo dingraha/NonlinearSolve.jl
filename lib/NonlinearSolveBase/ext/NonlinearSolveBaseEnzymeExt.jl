@@ -5,6 +5,72 @@ import SciMLBase: SciMLBase, value
 using Enzyme
 import Enzyme: Const, MixedDuplicated
 using ChainRulesCore
+import SciMLStructures
+
+# Accumulate a tangent `darg` into a shadow `dval`.
+# When `dval` is a SciMLStructure (e.g. MTKParameters), `darg` may be:
+#   - A tunable gradient vector (from SciMLSensitivity's EnzymeOriginator path)
+#   - Another SciMLStructure
+#   - A broadcastable array
+# In all cases, accumulation goes through the SciMLStructures interface.
+function _accum_tangent!(dval, darg)
+    if SciMLStructures.isscimlstructure(dval) && !(dval isa AbstractArray)
+        if SciMLStructures.isscimlstructure(darg)
+            shadow_tunables, _, _ = SciMLStructures.canonicalize(
+                SciMLStructures.Tunable(), dval,
+            )
+            darg_tunables, _, _ = SciMLStructures.canonicalize(
+                SciMLStructures.Tunable(), darg,
+            )
+            shadow_tunables .+= darg_tunables
+            SciMLStructures.replace!(SciMLStructures.Tunable(), dval, shadow_tunables)
+        elseif darg isa AbstractVector
+            shadow_tunables, _, _ = SciMLStructures.canonicalize(
+                SciMLStructures.Tunable(), dval,
+            )
+            if length(darg) == length(shadow_tunables)
+                shadow_tunables .+= darg
+                SciMLStructures.replace!(
+                    SciMLStructures.Tunable(), dval, shadow_tunables,
+                )
+            else
+                dval .+= darg
+            end
+        elseif darg isa NamedTuple
+            # Full parameter gradient from SteadyStateAdjoint (includes
+            # caches and other non-tunable components). Accumulate each
+            # matching field into the shadow.
+            for field in fieldnames(typeof(darg))
+                src = getfield(darg, field)
+                src === nothing && continue
+                if hasfield(typeof(dval), field)
+                    dst = getfield(dval, field)
+                    _accum_nested!(dst, src)
+                end
+            end
+        else
+            dval .+= darg
+        end
+    else
+        dval .+= darg
+    end
+    return nothing
+end
+
+# Recursively accumulate nested containers (tuples of arrays, etc.)
+function _accum_nested!(dst::AbstractArray, src::AbstractArray)
+    dst .+= src
+    return nothing
+end
+function _accum_nested!(dst::Tuple, src::Tuple)
+    for (d, s) in zip(dst, src)
+        _accum_nested!(d, s)
+    end
+    return nothing
+end
+_accum_nested!(::Any, ::Nothing) = nothing
+_accum_nested!(::Nothing, ::Any) = nothing
+_accum_nested!(::Nothing, ::Nothing) = nothing
 
 function Enzyme.EnzymeRules.augmented_primal(
         config::Enzyme.EnzymeRules.RevConfigWidth{1},
@@ -57,9 +123,9 @@ function Enzyme.EnzymeRules.reverse(
             continue
         end
         if ptr isa MixedDuplicated
-            ptr.dval[] .+= darg
+            _accum_tangent!(ptr.dval[], darg)
         else
-            ptr.dval .+= darg
+            _accum_tangent!(ptr.dval, darg)
         end
     end
     Enzyme.make_zero!(dres.u)
