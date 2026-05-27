@@ -1,11 +1,12 @@
 module NonlinearSolveNLsolveExt
 
 using LineSearches: Static
-using NLsolve: NLsolve, OnceDifferentiable, nlsolve
+using NLsolve: NLsolve, NonDifferentiable, OnceDifferentiable, nlsolve
 
-using NonlinearSolveBase: NonlinearSolveBase, Utils, TraceMinimal
+using NonlinearSolveBase: NonlinearSolveBase, Utils, TraceMinimal, is_fw_wrapped, get_raw_f
 using NonlinearSolve: NonlinearSolve, NLsolveJL
 using SciMLBase: SciMLBase, NonlinearProblem, ReturnCode
+using Setfield: @set
 
 function SciMLBase.__solve(
         prob::NonlinearProblem, alg::NLsolveJL, args...;
@@ -13,6 +14,11 @@ function SciMLBase.__solve(
         termination_condition = nothing, trace_level = TraceMinimal(),
         store_trace::Val = Val(false), show_trace::Val = Val(false), kwargs...
     )
+    # Unwrap AutoSpecialize — external packages do their own AD
+    if is_fw_wrapped(prob.f.f)
+        prob = @set prob.f.f = get_raw_f(prob.f.f)
+    end
+
     if haskey(kwargs, :alias_u0)
         alias = SciMLBase.NonlinearAliasSpecifier(alias_u0 = kwargs[:alias_u0])
     end
@@ -23,7 +29,11 @@ function SciMLBase.__solve(
 
     f!, u0, resid = NonlinearSolveBase.construct_extension_function_wrapper(prob; alias_u0)
 
-    if prob.f.jac === nothing && alg.autodiff isa Symbol
+    # Anderson and Broyden do not use a Jacobian — use NonDifferentiable to avoid
+    # allocating a dense N×N Jacobian (matches NLsolve.nlsolve's own behavior).
+    if alg.method in (:anderson, :broyden)
+        df = NonDifferentiable(f!, Utils.safe_vec(u0), Utils.safe_vec(resid); inplace = true)
+    elseif prob.f.jac === nothing && alg.autodiff isa Symbol
         df = OnceDifferentiable(f!, u0, resid; alg.autodiff)
     else
         autodiff = alg.autodiff isa Symbol ? nothing : alg.autodiff

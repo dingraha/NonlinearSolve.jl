@@ -160,6 +160,30 @@ function SciMLBase.__init(
         alias = SciMLBase.NonlinearAliasSpecifier(alias_u0 = kwargs[:alias_u0])
     end
     alias_u0 = alias.alias_u0
+    # Enzyme cannot differentiate through FunctionWrappers' llvmcall.
+    # QuasiNewton doesn't have alg.autodiff fields; autodiff may come through kwargs
+    # or from the linesearch/trustregion algorithm's own autodiff field.
+    _ls_ad = if alg.linesearch !== missing && alg.linesearch !== nothing &&
+            hasfield(typeof(alg.linesearch), :autodiff)
+        alg.linesearch.autodiff
+    else
+        nothing
+    end
+    _tr_ad = if alg.trustregion !== missing && alg.trustregion !== nothing &&
+            hasfield(typeof(alg.trustregion), :autodiff)
+        alg.trustregion.autodiff
+    else
+        nothing
+    end
+    _ad_prob = NonlinearSolveBase.maybe_unwrap_prob_for_enzyme(
+        prob,
+        get(kwargs, :autodiff, nothing),
+        get(kwargs, :jvp_autodiff, nothing),
+        get(kwargs, :vjp_autodiff, nothing),
+        _ls_ad,
+        _tr_ad,
+    )
+
     timer = get_timer_output()
     @static_timeit timer "cache construction" begin
 
@@ -222,7 +246,7 @@ function SciMLBase.__init(
             NonlinearSolveBase.supports_trust_region(alg.descent) ||
                 error("Trust Region not supported by $(alg.descent).")
             trustregion_cache = InternalAPI.init(
-                prob, alg.trustregion, fu, u, p; stats, internalnorm, kwargs...
+                _ad_prob, alg.trustregion, fu, u, _ad_prob.p; stats, internalnorm, kwargs...
             )
             globalization = Val(:TrustRegion)
         end
@@ -230,8 +254,12 @@ function SciMLBase.__init(
         if has_linesearch
             NonlinearSolveBase.supports_line_search(alg.descent) ||
                 error("Line Search not supported by $(alg.descent).")
+            _ls_ad = NonlinearSolveBase.standardize_forwarddiff_tag(
+                _ls_ad, _ad_prob
+            )
             linesearch_cache = CommonSolve.init(
-                prob, alg.linesearch, fu, u; stats, internalnorm, kwargs...
+                _ad_prob, alg.linesearch, fu, u;
+                stats, internalnorm, autodiff = _ls_ad, kwargs...
             )
             globalization = Val(:LineSearch)
         end

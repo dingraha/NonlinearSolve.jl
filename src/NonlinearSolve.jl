@@ -14,7 +14,7 @@ using NonlinearSolveBase: NonlinearSolveBase, AbstractNonlinearSolveAlgorithm,
 
 using SciMLBase: SciMLBase, ReturnCode, AbstractNonlinearProblem,
     NonlinearFunction,
-    NonlinearProblem, NonlinearLeastSquaresProblem, NoSpecialize
+    NonlinearProblem, NonlinearLeastSquaresProblem
 using SymbolicIndexingInterface: SymbolicIndexingInterface
 using StaticArraysCore: StaticArray
 
@@ -48,9 +48,9 @@ include("forward_diff.jl")
 
 @setup_workload begin
     nonlinear_functions = (
-        (NonlinearFunction{false, NoSpecialize}((u, p) -> u .* u .- p), 0.1),
-        (NonlinearFunction{false, NoSpecialize}((u, p) -> u .* u .- p), [0.1]),
-        (NonlinearFunction{true, NoSpecialize}((du, u, p) -> du .= u .* u .- p), [0.1]),
+        (NonlinearFunction{false}((u, p) -> u .* u .- p), 0.1),
+        (NonlinearFunction{false}((u, p) -> u .* u .- p), [0.1]),
+        (NonlinearFunction{true}((du, u, p) -> du .= u .* u .- p), [0.1]),
     )
 
     nonlinear_problems = NonlinearProblem[]
@@ -58,25 +58,43 @@ include("forward_diff.jl")
         push!(nonlinear_problems, NonlinearProblem(fn, u0, 2.0))
     end
 
+    # IIP with Vector{Float64} params
+    push!(
+        nonlinear_problems,
+        NonlinearProblem(
+            NonlinearFunction{true}((du, u, p) -> du .= u .* u .- p),
+            [0.1],
+            [2.0],
+        ),
+    )
+
+    # IIP with NullParameters (no p)
+    push!(
+        nonlinear_problems,
+        NonlinearProblem(
+            NonlinearFunction{true}((du, u, p) -> du .= u .* u .- 2.0),
+            [0.1],
+        ),
+    )
+
     nonlinear_functions = (
-        (NonlinearFunction{false, NoSpecialize}((u, p) -> (u .^ 2 .- p)[1:1]), [0.1, 0.0]),
+        (NonlinearFunction{false}((u, p) -> (u .^ 2 .- p)[1:1]), [0.1, 0.0]),
         (
-            NonlinearFunction{false, NoSpecialize}(
-                (
-                    u, p,
-                ) -> vcat(u .* u .- p, u .* u .- p)
+            NonlinearFunction{false}(
+                (u, p) -> vcat(u .* u .- p, u .* u .- p)
             ),
             [0.1, 0.1],
         ),
         (
-            NonlinearFunction{true, NoSpecialize}(
+            NonlinearFunction{true}(
                 (du, u, p) -> du[1] = u[1] * u[1] - p, resid_prototype = zeros(1)
             ),
             [0.1, 0.0],
         ),
         (
-            NonlinearFunction{true, NoSpecialize}(
-                (du, u, p) -> du .= vcat(u .* u .- p, u .* u .- p), resid_prototype = zeros(4)
+            NonlinearFunction{true}(
+                (du, u, p) -> du .= vcat(u .* u .- p, u .* u .- p),
+                resid_prototype = zeros(4)
             ),
             [0.1, 0.1],
         ),
@@ -86,6 +104,19 @@ include("forward_diff.jl")
     for (fn, u0) in nonlinear_functions
         push!(nlls_problems, NonlinearLeastSquaresProblem(fn, u0, 2.0))
     end
+
+    # NLLS with Vector{Float64} params
+    push!(
+        nlls_problems,
+        NonlinearLeastSquaresProblem(
+            NonlinearFunction{true}(
+                (du, u, p) -> du .= vcat(u .* u .- p, u .* u .- p),
+                resid_prototype = zeros(4),
+            ),
+            [0.1, 0.1],
+            [2.0, 2.0],
+        ),
+    )
 
     nlp_algs = [NewtonRaphson(), TrustRegion(), LevenbergMarquardt()]
     nlls_algs = [GaussNewton(), TrustRegion(), LevenbergMarquardt()]
@@ -98,6 +129,16 @@ include("forward_diff.jl")
 
             for prob in nlls_problems, alg in nlls_algs
                 Threads.@spawn CommonSolve.solve(prob, alg; abstol = 1.0e-2, verbose = NonlinearVerbosity())
+            end
+
+            # Default algorithms — the paths hit by solve(prob) with no algorithm
+            # NonlinearProblem → FastShortcutNonlinearPolyalg
+            # NonlinearLeastSquaresProblem → FastShortcutNLLSPolyalg
+            for prob in nonlinear_problems
+                Threads.@spawn CommonSolve.solve(prob; abstol = 1.0e-2, verbose = NonlinearVerbosity())
+            end
+            for prob in nlls_problems
+                Threads.@spawn CommonSolve.solve(prob; abstol = 1.0e-2, verbose = NonlinearVerbosity())
             end
         end
     end

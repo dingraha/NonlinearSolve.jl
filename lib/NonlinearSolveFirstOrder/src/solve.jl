@@ -176,6 +176,12 @@ function SciMLBase.__init(
         verbose = NonlinearVerbosity(verbose)
     end
 
+    # Enzyme cannot differentiate through FunctionWrappers' llvmcall.
+    # Create unwrapped prob for all AD-related constructions when using Enzyme.
+    _ad_prob = NonlinearSolveBase.maybe_unwrap_prob_for_enzyme(
+        prob, alg.autodiff, alg.jvp_autodiff, alg.vjp_autodiff
+    )
+
     timer = get_timer_output()
     @static_timeit timer "cache construction" begin
         u = Utils.maybe_unaliased(prob.u0, alias_u0)
@@ -191,7 +197,7 @@ function SciMLBase.__init(
         linsolve_kwargs = merge((; verbose = verbose.linear_verbosity, abstol, reltol), linsolve_kwargs)
 
         jac_cache = NonlinearSolveBase.construct_jacobian_cache(
-            prob, alg, prob.f, fu, u, prob.p;
+            _ad_prob, alg, _ad_prob.f, fu, u, _ad_prob.p;
             stats, alg.autodiff, linsolve, alg.jvp_autodiff, alg.vjp_autodiff
         )
         J = reused_jacobian(jac_cache, u)
@@ -218,9 +224,18 @@ function SciMLBase.__init(
         if has_trustregion
             NonlinearSolveBase.supports_trust_region(alg.descent) ||
                 error("Trust Region not supported by $(alg.descent).")
+            # Standardize AD tags so VecJac/JacVec operators use NonlinearSolveTag
+            # when the function is wrapped by AutoSpecialize.
+            _tr_vjp_ad = NonlinearSolveBase.standardize_forwarddiff_tag(
+                alg.vjp_autodiff, _ad_prob
+            )
+            _tr_jvp_ad = NonlinearSolveBase.standardize_forwarddiff_tag(
+                alg.jvp_autodiff, _ad_prob
+            )
             trustregion_cache = InternalAPI.init(
-                prob, alg.trustregion, prob.f, fu, u, prob.p;
-                alg.vjp_autodiff, alg.jvp_autodiff, stats, internalnorm, kwargs...
+                _ad_prob, alg.trustregion, _ad_prob.f, fu, u, _ad_prob.p;
+                vjp_autodiff = _tr_vjp_ad, jvp_autodiff = _tr_jvp_ad,
+                stats, internalnorm, kwargs...
             )
             globalization = Val(:TrustRegion)
         end
@@ -228,19 +243,20 @@ function SciMLBase.__init(
         if has_linesearch
             NonlinearSolveBase.supports_line_search(alg.descent) ||
                 error("Line Search not supported by $(alg.descent).")
+            _ls_ad = NonlinearSolveBase.standardize_forwarddiff_tag(
+                ifelse(provided_jvp_autodiff, alg.jvp_autodiff, alg.vjp_autodiff),
+                _ad_prob
+            )
             linesearch_cache = CommonSolve.init(
-                prob, alg.linesearch, fu, u; stats, internalnorm,
-                autodiff = ifelse(
-                    provided_jvp_autodiff, alg.jvp_autodiff, alg.vjp_autodiff
-                ),
-                kwargs...
+                _ad_prob, alg.linesearch, fu, u; stats, internalnorm,
+                autodiff = _ls_ad, kwargs...
             )
             globalization = Val(:LineSearch)
         end
 
         if has_forcing
             forcing_cache = InternalAPI.init(
-                prob, alg.forcing, fu, u, u, prob.p; stats, internalnorm,
+                _ad_prob, alg.forcing, fu, u, u, _ad_prob.p; stats, internalnorm,
                 autodiff = ifelse(
                     provided_jvp_autodiff, alg.jvp_autodiff, alg.vjp_autodiff
                 ),

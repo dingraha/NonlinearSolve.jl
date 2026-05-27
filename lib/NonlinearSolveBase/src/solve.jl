@@ -374,7 +374,8 @@ end
                     cache.prob, cache.alg, u,
                     $(Utils.evaluate_f)(cache.prob, u)::_fuType;
                     retcode = cache.retcode, stats = cache.stats,
-                    trace = (cache.caches[1].trace::_traceType)
+                    trace = (cache.caches[1].trace::_traceType),
+                    store_original = cache.alg.store_original
                 )
             end
         end
@@ -400,7 +401,8 @@ end
                         return build_solution_less_specialize(
                             cache.prob, cache.alg, $(u_result_syms[i]), fu;
                             retcode = $(sol_syms[i]).retcode, stats,
-                            original = $(sol_syms[i]), trace = ($(sol_syms[i]).trace::_traceType)
+                            original = $(sol_syms[i]), trace = ($(sol_syms[i]).trace::_traceType),
+                            store_original = cache.alg.store_original
                         )
                     elseif cache.alias_u0
                         # For safety we need to maintain a copy of the solution
@@ -446,7 +448,8 @@ end
             _trace = cache.caches[idx].trace::_traceType
             return build_solution_less_specialize(
                 cache.prob, cache.alg, u::_uType, fus[idx]::_fuType;
-                retcode, cache.stats, trace = _trace
+                retcode, cache.stats, trace = _trace,
+                store_original = cache.alg.store_original
             )
         end
     )
@@ -529,7 +532,8 @@ end
                 u = $(SII.state_values)(prob)
                 return build_solution_less_specialize(
                     prob, alg, u, $(Utils.evaluate_f)(prob, u);
-                    retcode = $(ReturnCode.InitialFailure)
+                    retcode = $(ReturnCode.InitialFailure),
+                    store_original = alg.store_original
                 )
             end
         end
@@ -568,7 +572,8 @@ end
                         return build_solution_less_specialize(
                             prob, alg, $(u_result_syms[i]), $(cur_sol).resid;
                             $(cur_sol).retcode, $(cur_sol).stats,
-                            $(cur_sol).trace, original = $(cur_sol)
+                            $(cur_sol).trace, original = $(cur_sol),
+                            store_original = alg.store_original
                         )
                     elseif alias_u0
                         # For safety we need to maintain a copy of the solution
@@ -606,7 +611,8 @@ end
                     return build_solution_less_specialize(
                         prob, alg, $(u_result_syms[i]), $(sol_syms[i]).resid;
                         $(sol_syms[i]).retcode, $(sol_syms[i]).stats,
-                        $(sol_syms[i]).trace, original = $(sol_syms[i])
+                        $(sol_syms[i]).trace, original = $(sol_syms[i]),
+                        store_original = alg.store_original
                     )
                 end
             end
@@ -767,6 +773,14 @@ function _solve_forward(
     end
 end
 
+function maybe_wrap_f(prob::AbstractNonlinearProblem)
+    wrapped_f = maybe_wrap_nonlinear_f(prob)
+    wrapped_f === prob.f.f && return prob
+    @set! prob.f.f = wrapped_f
+    return prob
+end
+
+
 function get_concrete_problem(prob::NonlinearProblem; kwargs...)
     oldprob = prob
     prob = get_updated_symbolic_problem(get_root_indp(prob), prob; kwargs...)
@@ -776,7 +790,8 @@ function get_concrete_problem(prob::NonlinearProblem; kwargs...)
     p = get_concrete_p(prob, kwargs)
     u0 = get_concrete_u0(prob, true, nothing, kwargs)
     u0 = promote_u0(u0, p, nothing)
-    return remake(prob; u0 = u0, p = p, lb = prob.lb, ub = prob.ub)
+    prob = remake(prob; u0 = u0, p = p, lb = prob.lb, ub = prob.ub)
+    return maybe_wrap_f(prob)
 end
 
 function get_concrete_problem(prob::NonlinearLeastSquaresProblem; kwargs...)
@@ -788,7 +803,8 @@ function get_concrete_problem(prob::NonlinearLeastSquaresProblem; kwargs...)
     p = get_concrete_p(prob, kwargs)
     u0 = get_concrete_u0(prob, true, nothing, kwargs)
     u0 = promote_u0(u0, p, nothing)
-    return remake(prob; u0 = u0, p = p, lb = prob.lb, ub = prob.ub)
+    prob = remake(prob; u0 = u0, p = p, lb = prob.lb, ub = prob.ub)
+    return maybe_wrap_f(prob)
 end
 
 function get_concrete_problem(prob::ImmutableNonlinearProblem; kwargs...)

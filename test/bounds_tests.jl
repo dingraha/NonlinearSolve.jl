@@ -1,5 +1,5 @@
 @testitem "Bounds: NonlinearLeastSquaresProblem" tags = [:core, :bounds] begin
-    using SciMLBase
+    using SciMLBase, NonlinearSolveBase
 
     # Test out-of-place version
     f(u, p) = u .- p
@@ -33,11 +33,11 @@
         @test all(sol.u .<= 10.0)
     end
 
-    # Test in-place version
+    # Test in-place version — use FullSpecialize for bounds compatibility
     f!(resid, u, p) = resid .= u .- p
     u0 = [5.0, 5.0]
     p = [1.0, 2.0]
-    nf = NonlinearFunction(f!)
+    nf = NonlinearFunction{true, SciMLBase.FullSpecialize}(f!)
     lb = [0.0, 0.0]
     ub = [10.0, 10.0]
 
@@ -46,8 +46,15 @@
     @test SciMLBase.successful_retcode(sol)
     @test sol.u ≈ [1.0, 2.0] atol = 1.0e-6
 
-    # Test that the original problem is preserved
+    # FullSpecialize preserves function identity
     @test sol.prob.f.f === f!
+
+    # Default (AutoSpecialize) also works with bounds — bounds transform
+    # unwraps AutoSpecializeCallable before wrapping in BoundedWrapper
+    prob_as = NonlinearLeastSquaresProblem(NonlinearFunction(f!), u0, p; lb, ub)
+    sol_as = solve(prob_as, alg)
+    @test SciMLBase.successful_retcode(sol_as)
+    @test sol_as.u ≈ [1.0, 2.0] atol = 1.0e-6
     @test sol.prob.lb == lb
     @test sol.prob.ub == ub
     @test sol.prob.u0 == prob.u0

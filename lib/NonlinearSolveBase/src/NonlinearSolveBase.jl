@@ -10,6 +10,8 @@ using ADTypes: ADTypes, AbstractADType, AutoSparse, AutoForwardDiff, NoSparsityD
 using Adapt: WrappedArray
 using ArrayInterface: ArrayInterface
 using DifferentiationInterface: DifferentiationInterface, Constant
+using FunctionWrappers: FunctionWrappers
+import FunctionWrappersWrappers
 using StaticArraysCore: StaticArray, SMatrix, SArray, MArray
 
 using CommonSolve: CommonSolve, init
@@ -29,7 +31,7 @@ import SciMLBase: solve, init, __init, __solve, wrap_sol, get_root_indp, isinpla
 using SciMLJacobianOperators: JacobianOperator, StatefulJacobianOperator
 using SciMLOperators: AbstractSciMLOperator, IdentityOperator
 using SciMLLogging: SciMLLogging, @SciMLMessage, @verbosity_specifier,
-    AbstractVerbositySpecifier, AbstractVerbosityPreset, AbstractMessageLevel,
+    AbstractVerbositySpecifier, AbstractVerbosityPreset, MessageLevel,
     None, Minimal, Standard, Detailed, All, Silent, InfoLevel, WarnLevel
 
 using PreallocationTools: FixedSizeDiffCache, get_tmp
@@ -54,6 +56,7 @@ include("abstract_types.jl")
 include("common_defaults.jl")
 include("termination_conditions.jl")
 
+include("autospecialize.jl")
 include("autodiff.jl")
 include("jacobian.jl")
 include("linear_solve.jl")

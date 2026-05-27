@@ -6,14 +6,89 @@ using CommonSolve: CommonSolve, solve, solve!, init
 using DifferentiationInterface: DifferentiationInterface
 using FastClosures: @closure
 using ForwardDiff: ForwardDiff, Dual, pickchunksize
+using FunctionWrappers: FunctionWrappers
+import FunctionWrappersWrappers
 using SciMLBase: SciMLBase, AbstractNonlinearProblem, IntervalNonlinearProblem,
     NonlinearProblem, NonlinearLeastSquaresProblem, remake
+using Setfield: @set
 
 using LinearAlgebra: LinearAlgebra, dot, norm
 using NonlinearSolveBase: NonlinearSolveBase, ImmutableNonlinearProblem, Utils, InternalAPI,
-    NonlinearSolvePolyAlgorithm, NonlinearSolveForwardDiffCache
+    NonlinearSolvePolyAlgorithm, NonlinearSolveForwardDiffCache,
+    NonlinearSolveTag, is_fw_wrapped
+
+import NonlinearSolveBase: wrapfun_iip, standardize_forwarddiff_tag
 
 const DI = DifferentiationInterface
+
+# --- AutoSpecialize / norecompile infrastructure for ForwardDiff ---
+
+const dualT = ForwardDiff.Dual{
+    ForwardDiff.Tag{NonlinearSolveTag, Float64}, Float64, 1,
+}
+dualgen(::Type{T}) where {T} = ForwardDiff.Dual{
+    ForwardDiff.Tag{NonlinearSolveTag, T}, T, 1,
+}
+
+# Helper: build the canonical AutoForwardDiff for wrapped functions
+# (chunksize=1 + NonlinearSolveTag). The tag's `V` parameter takes the
+# actual problem eltype rather than being hardcoded to `Float64`, so the
+# stamped AD backend properly reflects the user's problem type.
+function _wrapped_forwarddiff_ad(::Type{T}) where {T}
+    tag = ForwardDiff.Tag(NonlinearSolveTag(), T)
+    return AutoForwardDiff{1, typeof(tag)}(tag)
+end
+
+# Stamp AutoForwardDiff with NonlinearSolveTag so duals match the wrapped
+# `FunctionWrappersWrapper` signatures. Only stamps when the user function was
+# actually wrapped via AutoSpecialize — otherwise leaves `ad` untouched so
+# DifferentiationInterface generates a fresh runtime tag from the function type.
+# Substituting the canonical tag in the non-wrapped path would otherwise drag in
+# a precompile-time `@generated tagcount` literal that can `≺`-reverse against
+# tags created later for nested ForwardDiff over an inner solve.
+function standardize_forwarddiff_tag(
+        ad::AutoForwardDiff{CS, Nothing}, prob::AbstractNonlinearProblem
+    ) where {CS}
+    is_fw_wrapped(prob.f.f) || return ad
+    return _wrapped_forwarddiff_ad(eltype(prob.u0))
+end
+
+# AutoPolyesterForwardDiff doesn't support custom tags. When the function is
+# wrapped, replace it with AutoForwardDiff (chunksize=1, NonlinearSolveTag) so
+# duals match wrappers. Otherwise leave it alone.
+function standardize_forwarddiff_tag(
+        ad::AutoPolyesterForwardDiff, prob::AbstractNonlinearProblem
+    )
+    is_fw_wrapped(prob.f.f) || return ad
+    return _wrapped_forwarddiff_ad(eltype(prob.u0))
+end
+
+# IIP wrapfun: wraps f(du, u, p) with dual-aware type combinations.
+# Works for any `AbstractArray` state; the Dual-eltype array type `VdT` is
+# derived via `typeof(similar(u0, dT))` so signatures follow the user's
+# concrete array kind (plain `Vector{Float64}` → `Vector{Dual}`,
+# `Array{Float64, 3}` → `Array{Dual, 3}`, `CuArray{Float32}` →
+# `CuArray{Dual}`, etc.). The call allocates once at FWW-construction time
+# (not on any hot path) and is broadly compatible with array kinds that do
+# not implement `ArrayInterface.promote_eltype` — e.g. `CuArray` — which was
+# breaking GPU tests when this derived `VdT` via `promote_eltype`.
+@inline function wrapfun_iip(
+        ff, inputs::Tuple{T1, T2, T3}
+    ) where {T1 <: AbstractArray, T2 <: AbstractArray, T3}
+    T = eltype(T1)
+    dT = dualgen(T)
+    VdT = typeof(similar(inputs[1], dT))
+    iip_arglists = (
+        Tuple{T1, T2, T3},
+        Tuple{VdT, VdT, T3},
+        Tuple{VdT, VdT, VdT},
+        Tuple{VdT, T2, VdT},
+    )
+    iip_returnlists = (Nothing, Nothing, Nothing, Nothing)
+    return FunctionWrappersWrappers.FunctionWrappersWrapper(
+        SciMLBase.Void(ff), iip_arglists, iip_returnlists
+    )
+end
 
 const GENERAL_SOLVER_TYPES = [
     Nothing, NonlinearSolvePolyAlgorithm,
@@ -54,16 +129,33 @@ function NonlinearSolveBase.nonlinearsolve_forwarddiff_solve(
         newprob = IntervalNonlinearProblem(prob.f, tspan, p; prob.kwargs...)
     else
         newprob = remake(prob; p, u0 = Utils.value(prob.u0))
+        # `remake` reuses `prob.f.f`. If `get_concrete_problem` had wrapped the
+        # outer prob under a Dual u0 eltype (via `promote_u0`), the stored
+        # `FunctionWrappersWrapper` signatures are keyed off that Dual eltype
+        # and would miss the inner Float64 solve's `f(du, u, p)` dispatch.
+        # Unwrap here so the inner solve's `maybe_wrap_f` rebuilds a wrapper
+        # aligned with the value-typed `u0`/`p`.
+        if is_fw_wrapped(newprob.f.f)
+            newprob = @set newprob.f.f = NonlinearSolveBase.get_raw_f(newprob.f.f)
+        end
     end
 
     sol = solve(newprob, alg, args...; kwargs...)
     uu = sol.u
 
-    fn = prob isa NonlinearLeastSquaresProblem ?
-        NonlinearSolveBase.nlls_generate_vjp_function(prob, sol, uu) : prob.f
+    # Unwrap AutoSpecializeCallable for the AD-over-solve Jacobian computations.
+    # These use ForwardDiff with closure-based tags that don't match the wrapper signatures.
+    ad_prob = if is_fw_wrapped(prob.f.f)
+        @set prob.f.f = NonlinearSolveBase.get_raw_f(prob.f.f)
+    else
+        prob
+    end
 
-    Jₚ = NonlinearSolveBase.nonlinearsolve_∂f_∂p(prob, fn, uu, p)
-    Jᵤ = NonlinearSolveBase.nonlinearsolve_∂f_∂u(prob, fn, uu, p)
+    fn = ad_prob isa NonlinearLeastSquaresProblem ?
+        NonlinearSolveBase.nlls_generate_vjp_function(ad_prob, sol, uu) : ad_prob.f
+
+    Jₚ = NonlinearSolveBase.nonlinearsolve_∂f_∂p(ad_prob, fn, uu, p)
+    Jᵤ = NonlinearSolveBase.nonlinearsolve_∂f_∂u(ad_prob, fn, uu, p)
     z = -Jᵤ \ Jₚ
     pp = prob.p
     sumfun = ((z, p),) -> map(Base.Fix2(*, ForwardDiff.partials(p)), z)
@@ -100,9 +192,9 @@ end
 
 function NonlinearSolveBase.nonlinearsolve_∂f_∂u(prob, f::F, u, p) where {F}
     if SciMLBase.isinplace(prob)
-        return ForwardDiff.jacobian(
-            @closure((du, u) -> f(du, u, p)), Utils.safe_similar(u), u
-        )
+        jac_f = @closure((du, u) -> f(du, u, p))
+        du_cache = Utils.safe_similar(u)
+        return ForwardDiff.jacobian(jac_f, du_cache, u)
     end
     u isa Number && return ForwardDiff.derivative(Base.Fix2(f, p), u)
     return ForwardDiff.jacobian(Base.Fix2(f, p), u)
@@ -157,6 +249,12 @@ for algType in GENERAL_SOLVER_TYPES
         )
         p = NonlinearSolveBase.nodual_value(prob.p)
         newprob = SciMLBase.remake(prob; u0 = NonlinearSolveBase.nodual_value(prob.u0), p)
+        # See comment in `nonlinearsolve_forwarddiff_solve`: the outer FWW's
+        # signatures were built under a Dual u0 eltype and would miss the
+        # inner value-typed solve. Unwrap and let the inner init rebuild.
+        if is_fw_wrapped(newprob.f.f)
+            newprob = @set newprob.f.f = NonlinearSolveBase.get_raw_f(newprob.f.f)
+        end
         cache = init(newprob, alg, args...; kwargs...)
         return NonlinearSolveForwardDiffCache(
             cache, newprob, alg, prob.p, p, ForwardDiff.partials(prob.p)
@@ -169,11 +267,18 @@ function CommonSolve.solve!(cache::NonlinearSolveForwardDiffCache)
     prob = cache.prob
     uu = sol.u
 
-    fn = prob isa NonlinearLeastSquaresProblem ?
-        NonlinearSolveBase.nlls_generate_vjp_function(prob, sol, uu) : prob.f
+    # Unwrap AutoSpecializeCallable for the AD-over-solve Jacobian computations.
+    ad_prob = if is_fw_wrapped(prob.f.f)
+        @set prob.f.f = NonlinearSolveBase.get_raw_f(prob.f.f)
+    else
+        prob
+    end
 
-    Jₚ = NonlinearSolveBase.nonlinearsolve_∂f_∂p(prob, fn, uu, cache.values_p)
-    Jᵤ = NonlinearSolveBase.nonlinearsolve_∂f_∂u(prob, fn, uu, cache.values_p)
+    fn = ad_prob isa NonlinearLeastSquaresProblem ?
+        NonlinearSolveBase.nlls_generate_vjp_function(ad_prob, sol, uu) : ad_prob.f
+
+    Jₚ = NonlinearSolveBase.nonlinearsolve_∂f_∂p(ad_prob, fn, uu, cache.values_p)
+    Jᵤ = NonlinearSolveBase.nonlinearsolve_∂f_∂u(ad_prob, fn, uu, cache.values_p)
 
     z_arr = -Jᵤ \ Jₚ
 
@@ -201,8 +306,7 @@ NonlinearSolveBase.nodual_value(x::AbstractArray{<:Dual}) = map(ForwardDiff.valu
 # Nonlinear solvers compute Jacobians via ForwardDiff, triggering compilation of
 # Dual arithmetic, broadcast, and SubArray patterns at runtime. Exercising these
 # patterns here moves that overhead to precompile time.
-struct NonlinearSolveTag end
-const dualT = Dual{ForwardDiff.Tag{NonlinearSolveTag, Float64}, Float64, 1}
+# NonlinearSolveTag and dualT are already defined at the top of this extension.
 
 import PrecompileTools
 PrecompileTools.@compile_workload begin

@@ -4,9 +4,10 @@ using FastClosures: @closure
 using SIAMFANLEquations: SIAMFANLEquations, aasol, nsol, nsoli, nsolsc, ptcsol, ptcsoli,
     ptcsolsc, secant
 
-using NonlinearSolveBase: NonlinearSolveBase
+using NonlinearSolveBase: NonlinearSolveBase, is_fw_wrapped, get_raw_f
 using NonlinearSolve: NonlinearSolve, SIAMFANLEquationsJL
 using SciMLBase: SciMLBase, NonlinearProblem, ReturnCode
+using Setfield: @set
 
 function siamfanlequations_retcode_mapping(sol)
     if sol.errcode == 0
@@ -17,6 +18,9 @@ function siamfanlequations_retcode_mapping(sol)
         return ReturnCode.Failure
     elseif sol.errcode == -1
         return ReturnCode.Default
+    elseif sol.errcode == -2
+        # aasol reports -2 when the Anderson iteration is diverging.
+        return ReturnCode.Unstable
     else
         error(lazy"Unknown SIAMFANLEquations return code: $(sol.errcode)")
     end
@@ -42,6 +46,11 @@ function SciMLBase.__solve(
         abstol = nothing, reltol = nothing, alias = SciMLBase.NonlinearAliasSpecifier(alias_u0 = false), maxiters = 1000,
         termination_condition = nothing, show_trace = Val(false), kwargs...
     )
+    # Unwrap AutoSpecialize — external packages do their own AD
+    if is_fw_wrapped(prob.f.f)
+        prob = @set prob.f.f = get_raw_f(prob.f.f)
+    end
+
     if haskey(kwargs, :alias_u0)
         alias = SciMLBase.NonlinearAliasSpecifier(alias_u0 = kwargs[:alias_u0])
     end
@@ -102,7 +111,13 @@ function SciMLBase.__solve(
                 )
             end
         else
-            if prob.f.jac === nothing && alg.autodiff === missing
+            # Anderson acceleration does not use a Jacobian — skip allocating FPS.
+            if method == :anderson
+                sol = aasol(
+                    f, u, m, zeros(T, N, 2 * m + 4);
+                    atol, rtol, maxit = maxiters, beta
+                )
+            elseif prob.f.jac === nothing && alg.autodiff === missing
                 FPS = zeros_like(u, N, N)
                 if method == :newton
                     sol = nsol(
@@ -112,11 +127,6 @@ function SciMLBase.__solve(
                     sol = ptcsol(
                         f, u, FS, FPS;
                         atol, rtol, maxit = maxiters, delta0 = delta, printerr
-                    )
-                elseif method == :anderson
-                    sol = aasol(
-                        f, u, m, zeros(T, N, 2 * m + 4);
-                        atol, rtol, maxit = maxiters, beta
                     )
                 end
             else

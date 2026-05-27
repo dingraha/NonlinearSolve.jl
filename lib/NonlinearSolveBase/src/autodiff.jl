@@ -172,27 +172,53 @@ function nlls_generate_vjp_function(prob::NonlinearLeastSquaresProblem, sol, uu)
         autodiff = length(uu) + length(sol.resid) ≥ 50 ?
             select_reverse_mode_autodiff(prob, nothing) : AutoForwardDiff()
 
+        # Use raw (unwrapped) function for nested differentiation to avoid
+        # FunctionWrapper type mismatches with nested duals
+        raw_f = get_raw_f(prob.f.f)
+
+        # `DI.pullback` with `AutoForwardDiff` is emulated via pushforward into
+        # a buffer keyed off `eltype(u)`, which breaks when this vjp closure
+        # runs under an outer ForwardDiff layer (the function output becomes
+        # Dual while `u` stays Float64). For ForwardDiff we materialize the
+        # Jacobian and form `2·J'·r` directly — `DI.jacobian` here dispatches
+        # to `ForwardDiff.jacobian`, which handles nested Duals via fresh tags.
+        if autodiff isa AutoForwardDiff
+            if SciMLBase.isinplace(prob)
+                return @closure (du, u, p) -> begin
+                    ff = @closure uu -> begin
+                        T = promote_type(eltype(uu), eltype(p))
+                        r = Utils.safe_similar(uu, T, length(sol.resid))
+                        raw_f(r, uu, p)
+                        return r
+                    end
+                    J = DI.jacobian(ff, autodiff, u)
+                    mul!(du, J', ff(u), 2, false)
+                    return nothing
+                end
+            else
+                return @closure (u, p) -> begin
+                    J = DI.jacobian(Base.Fix2(raw_f, p), autodiff, u)
+                    return 2 .* (J' * raw_f(u, p))
+                end
+            end
+        end
+
         if SciMLBase.isinplace(prob)
-            return @closure (
-                du, u, p,
-            ) -> begin
+            return @closure (du, u, p) -> begin
                 resid = Utils.safe_similar(du, length(sol.resid))
-                prob.f(resid, u, p)
+                raw_f(resid, u, p)
                 # Using `Constant` lead to dual ordering issues
-                ff = @closure (du, u) -> prob.f(du, u, p)
+                ff = @closure (du, u) -> raw_f(du, u, p)
                 resid2 = copy(resid)
                 DI.pullback!(ff, resid2, (du,), autodiff, u, (resid,))
                 @. du *= 2
                 return nothing
             end
         else
-            return @closure (
-                u,
-                p,
-            ) -> begin
-                v = prob.f(u, p)
+            return @closure (u, p) -> begin
+                v = raw_f(u, p)
                 # Using `Constant` lead to dual ordering issues
-                res = only(DI.pullback(Base.Fix2(prob.f, p), autodiff, u, (v,)))
+                res = only(DI.pullback(Base.Fix2(raw_f, p), autodiff, u, (v,)))
                 ArrayInterface.can_setindex(res) || return 2 .* res
                 @. res *= 2
                 return res
