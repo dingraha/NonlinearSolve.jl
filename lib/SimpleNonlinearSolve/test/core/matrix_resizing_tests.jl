@@ -9,6 +9,7 @@
             SimpleKlement(),
             SimpleBroyden(),
             SimpleNewtonRaphson(),
+            SimpleNewtonRaphson(; linesearch = Val(true)),
             SimpleDFSane(),
             SimpleLimitedMemoryBroyden(; threshold = Val(2)),
             SimpleTrustRegion(),

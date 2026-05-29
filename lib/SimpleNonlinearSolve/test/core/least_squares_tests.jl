@@ -22,8 +22,12 @@
     prob_oop = NonlinearLeastSquaresProblem{false}(loss_function, θ_init, x)
 
     @testset "Solver: $(nameof(typeof(solver)))" for solver in [
-            SimpleNewtonRaphson(AutoForwardDiff()), SimpleGaussNewton(AutoForwardDiff()),
-            SimpleNewtonRaphson(AutoFiniteDiff()), SimpleGaussNewton(AutoFiniteDiff()),
+        SimpleNewtonRaphson(AutoForwardDiff()),
+        SimpleNewtonRaphson(; autodiff=AutoForwardDiff(), linesearch=Val(true)),
+        SimpleGaussNewton(AutoForwardDiff()),
+        SimpleNewtonRaphson(AutoFiniteDiff()),
+        SimpleNewtonRaphson(; autodiff=AutoFiniteDiff(), linesearch=Val(true)),
+        SimpleGaussNewton(AutoFiniteDiff()),
         ]
         sol = solve(prob_oop, solver)
         @test norm(sol.resid, Inf) < 1.0e-12
@@ -35,8 +39,12 @@
     )
 
     @testset "Solver: $(nameof(typeof(solver)))" for solver in [
-            SimpleNewtonRaphson(AutoForwardDiff()), SimpleGaussNewton(AutoForwardDiff()),
-            SimpleNewtonRaphson(AutoFiniteDiff()), SimpleGaussNewton(AutoFiniteDiff()),
+        SimpleNewtonRaphson(AutoForwardDiff()),
+        SimpleNewtonRaphson(; autodiff=AutoForwardDiff(), linesearch=Val(true)),
+        SimpleGaussNewton(AutoForwardDiff()),
+        SimpleNewtonRaphson(AutoFiniteDiff()),
+        SimpleNewtonRaphson(; autodiff=AutoFiniteDiff(), linesearch=Val(true)),
+        SimpleGaussNewton(AutoFiniteDiff()),
         ]
         sol = solve(prob_iip, solver)
         @test norm(sol.resid, Inf) < 1.0e-12

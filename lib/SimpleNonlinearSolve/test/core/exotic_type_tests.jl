@@ -10,6 +10,7 @@
 
     @testset "$(nameof(typeof(alg)))" for alg in (
             SimpleNewtonRaphson(; autodiff = AutoForwardDiff()),
+            SimpleNewtonRaphson(; autodiff = AutoForwardDiff(), linesearch = Val(true)),
             SimpleBroyden(),
             SimpleKlement(),
             SimpleDFSane(),

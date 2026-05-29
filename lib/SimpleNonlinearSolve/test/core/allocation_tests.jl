@@ -6,6 +6,7 @@
 
     @testset "$(nameof(typeof(alg)))" for alg in (
             SimpleNewtonRaphson(),
+            SimpleNewtonRaphson(; linesearch = Val(true)),
             SimpleTrustRegion(),
             SimpleTrustRegion(; nlsolve_update_rule = Val(true)),
             SimpleBroyden(),

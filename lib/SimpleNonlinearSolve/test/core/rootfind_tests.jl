@@ -57,6 +57,7 @@ end
 @testitem "First Order Methods" setup = [RootfindTestSnippet] tags = [:core] begin
     @testset for alg in (
             SimpleNewtonRaphson,
+            (; kwargs...) -> SimpleNewtonRaphson(; kwargs..., linesearch = Val(true)),
             SimpleTrustRegion,
             (; kwargs...) -> SimpleTrustRegion(; kwargs..., nlsolve_update_rule = Val(true)),
         )
@@ -190,6 +191,7 @@ end
             SimpleTrustRegion(),
             SimpleHalley(),
             SimpleTrustRegion(; nlsolve_update_rule = Val(true)),
+            SimpleNewtonRaphson(; linesearch = Val(true)),
         )
         sol = run_nlsolve_oop(newton_fails, u0, p; solver = alg)
         @test SciMLBase.successful_retcode(sol)
